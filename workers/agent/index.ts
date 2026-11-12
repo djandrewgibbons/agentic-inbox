@@ -306,6 +306,7 @@ export class EmailAgent extends AIChatAgent<any> {
 					sender: string;
 					subject: string;
 					threadId: string;
+					triageSummary?: string;
 				};
 				const result = await this.handleNewEmail(emailData);
 				return new Response(JSON.stringify(result), {
@@ -332,6 +333,7 @@ export class EmailAgent extends AIChatAgent<any> {
 		sender: string;
 		subject: string;
 		threadId: string;
+		triageSummary?: string;
 	}) {
 		const env = this.env as Env;
 		const workersai = createWorkersAI({ binding: env.AI });
@@ -430,7 +432,7 @@ Email details:
 - Email ID: ${emailData.emailId}
 - From: ${emailData.sender}
 - Subject: ${emailData.subject}
-- Thread ID: ${emailData.threadId}
+- Thread ID: ${emailData.threadId}${emailData.triageSummary ? `\n- Triage summary: ${emailData.triageSummary}` : ""}
 
 Email body:
 ${emailBody || "(could not pre-read — use get_email to read it)"}`;

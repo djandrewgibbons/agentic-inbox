@@ -43,6 +43,26 @@ https://github.com/cloudflare/agentic-inbox/issues/4#issuecomment-4269118513
 - **Auto-draft on new email** — Agent automatically reads inbound emails and generates draft replies, always requiring explicit confirmation before sending
 - **Configurable and persistent** — Custom system prompts per mailbox, persistent chat history, streaming markdown responses, and tool call visibility
 
+## Smart triage
+
+Every inbound email is classified before the agent sees it, then filed:
+
+| Category | Default | Draft |
+|---|---|---|
+| Needs reply | Inbox | Yes |
+| FYI | Inbox | No |
+| Admin (registrar, billing, security) | Archive, or Inbox + star if time-sensitive | No |
+| Notification | Archive | No |
+| Newsletter | Archive | No |
+| Cold outreach | Archive | No |
+| Spam | Spam | No |
+
+Classification order: your rules (Settings > Smart triage), built-in sender rules, bulk/auto-submitted headers, then Workers AI. Low-confidence AI results and mail from anyone you have written to stay in the inbox. Drafts are never sent automatically. Re-run triage on one email with `POST /api/v1/mailboxes/:mailbox/emails/:id/triage?apply=true`.
+
+Set `CATCH_ALL_MAILBOX` to deliver mail for addresses without their own mailbox (e.g. `hostmaster@`, `bookings@` on every domain) into one mailbox.
+
+Tests: `npm test`.
+
 ## Stack
 
 - **Frontend:** React 19, React Router v7, Tailwind CSS, Zustand, TipTap, `@cloudflare/kumo`
