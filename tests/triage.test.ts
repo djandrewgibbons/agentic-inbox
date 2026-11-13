@@ -40,7 +40,7 @@ test("Route 53 RDRP reminder is admin, not action-required, and gets archived", 
 	assert.equal(r.source, "builtin");
 	assert.equal(r.actionRequired, false);
 	const plan = planTriage(r, undefined, { knownCorrespondent: false });
-	assert.deepEqual(plan, { folder: "archive", markRead: true, star: false, draft: false });
+	assert.deepEqual(plan, { folder: "archive", markRead: true, star: false, draft: false, forward: false });
 });
 
 test("registrar verification / expiry mail stays in inbox and is starred", () => {
@@ -59,7 +59,7 @@ test("cold app-dev pitch falls through to AI, with a sales hint", () => {
 
 test("AI cold_outreach result is archived without a draft", () => {
 	const r: TriageResult = { category: "cold_outreach", source: "ai", confidence: 0.92, actionRequired: false, reason: "sales pitch" };
-	assert.deepEqual(planTriage(r, undefined, { knownCorrespondent: false }), { folder: "archive", markRead: true, star: false, draft: false });
+	assert.deepEqual(planTriage(r, undefined, { knownCorrespondent: false }), { folder: "archive", markRead: true, star: false, draft: false, forward: false });
 });
 
 test("low-confidence AI result is left in the inbox", () => {
@@ -111,4 +111,19 @@ test("matchPattern: substring, wildcard, regex", () => {
 	assert.ok(matchPattern("*@*.registrar.amazon", "x@mail.registrar.amazon"));
 	assert.ok(matchPattern("/^hello\\b/", "Hello - www.djandrewgibbons.us"));
 	assert.ok(!matchPattern("/[unclosed/", "anything"));
+});
+
+test("forwarding: off without an address, then by category and urgency", () => {
+	const reply: TriageResult = { category: "needs_reply", source: "ai", confidence: 0.9, actionRequired: false, reason: "" };
+	const ctx = { knownCorrespondent: false };
+	assert.equal(planTriage(reply, undefined, ctx).forward, false);
+	assert.equal(planTriage(reply, { forwardTo: "not an address" }, ctx).forward, false);
+	assert.equal(planTriage(reply, { forwardTo: "me@example.com" }, ctx).forward, true);
+	assert.equal(planTriage(reply, { forwardTo: "me@example.com", forwardCategories: [] }, ctx).forward, false);
+
+	const routine = classifyByRules(rdrp)!;
+	assert.equal(planTriage(routine, { forwardTo: "me@example.com" }, ctx).forward, false);
+	const urgent = classifyByRules({ ...rdrp, subject: "Verify your email address for sendachshund.com" })!;
+	assert.equal(planTriage(urgent, { forwardTo: "me@example.com" }, ctx).forward, true);
+	assert.equal(planTriage(urgent, { forwardTo: "me@example.com", forwardUrgent: false }, ctx).forward, false);
 });

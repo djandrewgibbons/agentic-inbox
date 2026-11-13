@@ -68,5 +68,5 @@ export async function sendEmail(
 	}
 
 	const result = await binding.send(message as any);
-	return { messageId: result.messageId };
+	return { messageId: result?.messageId };
 }

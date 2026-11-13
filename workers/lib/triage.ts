@@ -7,6 +7,7 @@
 import {
 	TRIAGE_CATEGORIES,
 	TRIAGE_DESCRIPTIONS,
+	TRIAGE_LABELS,
 	COLD_OUTREACH_HINTS,
 	classifyByRules,
 	parseRules,
@@ -18,7 +19,8 @@ import {
 	type TriageSettings,
 } from "../../shared/triage";
 import { Folders } from "../../shared/folders";
-import { getMailboxStub, stripHtmlToText } from "./email-helpers";
+import { escapeHtml, getMailboxStub, stripHtmlToText, textToHtml } from "./email-helpers";
+import { sendEmail } from "../email-sender";
 import type { Env } from "../types";
 
 const TRIAGE_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
@@ -168,6 +170,91 @@ export async function triageEmail(
 		}
 	}
 
-	console.log(`Triage ${emailId}: ${result.category} (${result.source} ${result.confidence}) -> ${plan.folder}${plan.draft ? " +draft" : ""}`);
+	if (opts.apply !== false && plan.forward && settings?.forwardTo) {
+		try {
+			const sent = await forwardEmail(env, mailboxId, email, headers, result, settings.forwardTo.trim().toLowerCase());
+			if (!sent) plan.forward = false;
+		} catch (e) {
+			plan.forward = false;
+			console.error("Triage forward failed:", (e as Error).message);
+		}
+	}
+
+	console.log(`Triage ${emailId}: ${result.category} (${result.source} ${result.confidence}) -> ${plan.folder}${plan.draft ? " +draft" : ""}${plan.forward ? " +forward" : ""}`);
 	return { result, plan };
+}
+
+// ── Forwarding ─────────────────────────────────────────────────────
+
+const FORWARD_MARKER = "x-agentic-inbox-forwarded";
+const MAX_FORWARD_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+
+/**
+ * Send a copy of a stored email to `forwardTo`. The copy is sent from the
+ * mailbox address (Email Service only sends from your own domains) with
+ * Reply-To set to the original sender, so replying from the forward
+ * address reaches them directly. Returns false when skipped.
+ */
+async function forwardEmail(
+	env: Env,
+	mailboxId: string,
+	email: any,
+	headers: Record<string, string>,
+	result: TriageResult,
+	forwardTo: string,
+): Promise<boolean> {
+	const sender = (email.sender || "").toLowerCase();
+	// Loop guards: never forward our own forwards, or mail from the target.
+	if (headers[FORWARD_MARKER] || sender === forwardTo || forwardTo === mailboxId.toLowerCase()) return false;
+
+	const label = TRIAGE_LABELS[result.category] + (result.actionRequired ? " · action" : "");
+	const body = email.body || "";
+	const bodyHtml = /<[a-z][\s\S]*>/i.test(body) ? body : textToHtml(body);
+	const info = [
+		["From", email.sender],
+		["To", email.recipient],
+		["Subject", email.subject],
+		["Triage", `${label}. ${result.summary || result.reason}`],
+	]
+		.map(([k, v]) => `<b>${k}:</b> ${escapeHtml(String(v || ""))}`)
+		.join("<br>");
+
+	const attachments: { content: string; filename: string; type: string; disposition: "attachment" | "inline"; contentId?: string }[] = [];
+	const skipped: string[] = [];
+	let total = 0;
+	for (const att of (email.attachments || []) as any[]) {
+		if (total + att.size > MAX_FORWARD_ATTACHMENT_BYTES) { skipped.push(att.filename); continue; }
+		const obj = await env.BUCKET.get(`attachments/${email.id}/${att.id}/${att.filename}`);
+		if (!obj) { skipped.push(att.filename); continue; }
+		total += att.size;
+		attachments.push({
+			content: toBase64(new Uint8Array(await obj.arrayBuffer())),
+			filename: att.filename,
+			type: att.mimetype,
+			disposition: att.disposition === "inline" ? "inline" : "attachment",
+			...(att.content_id ? { contentId: att.content_id } : {}),
+		});
+	}
+	const skippedNote = skipped.length
+		? `<br><b>Not attached (too large or missing):</b> ${escapeHtml(skipped.join(", "))}`
+		: "";
+
+	await sendEmail(env.EMAIL, {
+		to: forwardTo,
+		from: { email: mailboxId, name: `${sender || "unknown"} via ${mailboxId}` },
+		...(sender ? { replyTo: sender } : {}),
+		subject: `[${label}] ${email.subject || "(no subject)"}`,
+		html: `<div style="font:12px monospace;background:#f4f4f4;border:1px solid #ccc;padding:8px;margin-bottom:12px">${info}${skippedNote}</div>${bodyHtml}`,
+		attachments,
+		headers: { "X-Agentic-Inbox-Forwarded": "1" },
+	});
+	return true;
+}
+
+function toBase64(bytes: Uint8Array): string {
+	let bin = "";
+	for (let i = 0; i < bytes.length; i += 0x8000) {
+		bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+	}
+	return btoa(bin);
 }

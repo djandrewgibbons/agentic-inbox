@@ -59,6 +59,8 @@ Every inbound email is classified before the agent sees it, then filed:
 
 Classification order: your rules (Settings > Smart triage), built-in sender rules, bulk/auto-submitted headers, then Workers AI. Low-confidence AI results and mail from anyone you have written to stay in the inbox. Drafts are never sent automatically. Re-run triage on one email with `POST /api/v1/mailboxes/:mailbox/emails/:id/triage?apply=true`.
 
+Forwarding: set "Forward a copy to" in Settings > Smart triage and pick which categories get forwarded (default: Needs reply, plus anything urgent). Copies are sent from the mailbox address with Reply-To set to the original sender; the mail is still filed in the mailbox.
+
 Set `CATCH_ALL_MAILBOX` to deliver mail for addresses without their own mailbox (e.g. `hostmaster@`, `bookings@` on every domain) into one mailbox.
 
 Tests: `npm test`.

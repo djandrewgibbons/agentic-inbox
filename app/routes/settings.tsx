@@ -9,6 +9,7 @@ import {
 	TRIAGE_CATEGORIES,
 	TRIAGE_DESCRIPTIONS,
 	TRIAGE_LABELS,
+	isValidEmail,
 	parseRules,
 	resolveTriageSettings,
 	type TriageAction,
@@ -41,6 +42,8 @@ export default function SettingsRoute() {
 	const [isSaving, setIsSaving] = useState(false);
 	const [triage, setTriage] = useState(() => resolveTriageSettings(undefined));
 	const ruleErrors = useMemo(() => parseRules(triage.rules).errors, [triage.rules]);
+	const forwardTo = triage.forwardTo.trim();
+	const forwardInvalid = forwardTo !== "" && !isValidEmail(forwardTo);
 
 	useEffect(() => {
 		if (mailbox) {
@@ -57,7 +60,7 @@ export default function SettingsRoute() {
 			...mailbox.settings,
 			fromName: displayName,
 			agentSystemPrompt: agentPrompt.trim() || undefined,
-			triage: triage satisfies TriageSettings,
+			triage: { ...triage, forwardTo } satisfies TriageSettings,
 		};
 		try {
 			await updateMailboxMutation.mutateAsync({ mailboxId, settings });
@@ -131,6 +134,32 @@ export default function SettingsRoute() {
 						/>
 					</div>
 
+					<div className="mb-5 space-y-3">
+						<Input
+							label="Forward a copy to"
+							type="email"
+							placeholder="you@example.com (leave empty for no forwarding)"
+							value={triage.forwardTo}
+							onChange={(e) => setTriage((t) => ({ ...t, forwardTo: e.target.value }))}
+						/>
+						{forwardInvalid && (
+							<p className="text-xs text-kumo-destructive">Enter one valid email address.</p>
+						)}
+						{forwardTo !== "" && !forwardInvalid && (
+							<>
+								<Switch
+									label="Also forward anything urgent, whatever its category"
+									checked={triage.forwardUrgent}
+									onCheckedChange={(v) => setTriage((t) => ({ ...t, forwardUrgent: v }))}
+								/>
+								<p className="text-xs text-kumo-subtle">
+									Copies are sent from {mailbox.email} with Reply-To set to the original
+									sender, and the mail is still filed here as usual.
+								</p>
+							</>
+						)}
+					</div>
+
 					<div className="divide-y divide-kumo-line border-y border-kumo-line mb-5">
 						{TRIAGE_CATEGORIES.map((cat: TriageCategory) => (
 							<div key={cat} className="flex flex-wrap items-center gap-3 py-2.5">
@@ -166,6 +195,20 @@ export default function SettingsRoute() {
 										}))
 									}
 								/>
+								{forwardTo !== "" && (
+									<Switch
+										label="Forward"
+										checked={triage.forwardCategories.includes(cat)}
+										onCheckedChange={(v) =>
+											setTriage((t) => ({
+												...t,
+												forwardCategories: v
+													? [...new Set([...t.forwardCategories, cat])]
+													: t.forwardCategories.filter((c) => c !== cat),
+											}))
+										}
+									/>
+								)}
 							</div>
 						))}
 					</div>
@@ -236,7 +279,7 @@ export default function SettingsRoute() {
 
 				{/* Save */}
 				<div className="flex justify-end">
-					<Button variant="primary" onClick={handleSave} loading={isSaving} disabled={ruleErrors.length > 0}>
+					<Button variant="primary" onClick={handleSave} loading={isSaving} disabled={ruleErrors.length > 0 || forwardInvalid}>
 						Save Changes
 					</Button>
 				</div>

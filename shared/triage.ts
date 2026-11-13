@@ -61,6 +61,13 @@ export const DEFAULT_TRIAGE_ACTIONS: Record<TriageCategory, TriageAction> = {
 /** Categories the agent drafts a reply for. Drafts are never sent automatically. */
 export const DEFAULT_DRAFT_CATEGORIES: TriageCategory[] = ["needs_reply"];
 
+/** Categories copied to the forward address once one is set. */
+export const DEFAULT_FORWARD_CATEGORIES: TriageCategory[] = ["needs_reply"];
+
+export function isValidEmail(s: string | undefined): boolean {
+	return !!s && /^[^\s@,;<>]+@[^\s@,;<>]+\.[^\s@,;<>]+$/.test(s.trim());
+}
+
 /** Below this AI confidence, mail stays in the inbox untouched. */
 export const DEFAULT_MIN_CONFIDENCE = 0.7;
 
@@ -81,6 +88,11 @@ export interface TriageSettings {
 	draftCategories?: TriageCategory[];
 	/** One rule per line, see parseRules(). */
 	rules?: string;
+	/** Address that gets a copy of matching mail. Empty = no forwarding. */
+	forwardTo?: string;
+	forwardCategories?: TriageCategory[];
+	/** Also forward anything flagged action-required, whatever its category. */
+	forwardUrgent?: boolean;
 }
 
 export interface TriageInput {
@@ -109,6 +121,8 @@ export interface TriagePlan {
 	markRead: boolean;
 	star: boolean;
 	draft: boolean;
+	/** Send a copy to settings.forwardTo. */
+	forward: boolean;
 }
 
 // ── Pattern matching ───────────────────────────────────────────────
@@ -339,16 +353,22 @@ export function planTriage(result: TriageResult, settings: TriageSettings | unde
 	if (result.actionRequired) folder = "inbox";
 	if (ctx.knownCorrespondent && result.source !== "rule" && folder !== "inbox") folder = "inbox";
 
+	const forwardCategories = settings?.forwardCategories ?? DEFAULT_FORWARD_CATEGORIES;
+	const forward =
+		isValidEmail(settings?.forwardTo) &&
+		(forwardCategories.includes(result.category) || (result.actionRequired && settings?.forwardUrgent !== false));
+
 	return {
 		folder,
 		markRead: folder !== "inbox",
 		star: result.actionRequired,
 		draft: folder === "inbox" && draftCategories.includes(result.category),
+		forward,
 	};
 }
 
 /** Settings with defaults filled in, for the UI. */
-export function resolveTriageSettings(s: TriageSettings | undefined): Required<Omit<TriageSettings, "rules">> & { rules: string } {
+export function resolveTriageSettings(s: TriageSettings | undefined): Required<TriageSettings> {
 	return {
 		enabled: s?.enabled ?? true,
 		useAI: s?.useAI ?? true,
@@ -356,5 +376,8 @@ export function resolveTriageSettings(s: TriageSettings | undefined): Required<O
 		actions: { ...DEFAULT_TRIAGE_ACTIONS, ...(s?.actions || {}) },
 		draftCategories: s?.draftCategories ?? DEFAULT_DRAFT_CATEGORIES,
 		rules: s?.rules ?? "",
+		forwardTo: s?.forwardTo ?? "",
+		forwardCategories: s?.forwardCategories ?? DEFAULT_FORWARD_CATEGORIES,
+		forwardUrgent: s?.forwardUrgent ?? true,
 	};
 }
