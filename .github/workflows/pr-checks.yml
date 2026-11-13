@@ -1,0 +1,14 @@
+name: PR Checks
+
+on:
+  pull_request:
+    branches: [mail.dxnd.ai]
+
+concurrency:
+  group: pr-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: Checks
+    uses: ./.github/workflows/checks.yml

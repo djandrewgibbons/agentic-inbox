@@ -168,4 +168,15 @@ export const mailboxMigrations: Migration[] = [
             CREATE INDEX IF NOT EXISTS idx_emails_folder_date ON emails(folder_id, date DESC);
         `,
 	},
+	{
+		name: "9_add_triage",
+		sql: txn(`
+            ALTER TABLE emails ADD COLUMN triage_category TEXT;
+            ALTER TABLE emails ADD COLUMN triage_source TEXT;
+            ALTER TABLE emails ADD COLUMN triage_confidence REAL;
+            ALTER TABLE emails ADD COLUMN triage_action_required INTEGER DEFAULT 0;
+            ALTER TABLE emails ADD COLUMN triage_summary TEXT;
+            ALTER TABLE emails ADD COLUMN triage_reason TEXT;
+        `),
+	},
 ];

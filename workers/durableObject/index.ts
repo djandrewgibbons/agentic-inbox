@@ -160,6 +160,9 @@ export class MailboxDO extends DurableObject<Env> {
 				email_references: schema.emails.email_references,
 				thread_id: schema.emails.thread_id,
 				folder_id: schema.emails.folder_id,
+				triage_category: schema.emails.triage_category,
+				triage_action_required: schema.emails.triage_action_required,
+				triage_summary: schema.emails.triage_summary,
 				snippet: sql<string>`SUBSTR(${schema.emails.body}, 1, 300)`,
 			})
 			.from(schema.emails)
@@ -355,6 +358,7 @@ export class MailboxDO extends DurableObject<Env> {
 				lif.id, lif.subject, lif.sender, lif.recipient, lif.date,
 				lif.read, lif.starred, lif.thread_id, lif.folder_id,
 				lif.in_reply_to, lif.email_references,
+				lif.triage_category, lif.triage_action_required, lif.triage_summary,
 				SUBSTR(lif.body, 1, 300) as snippet,
 				cs.thread_count, cs.thread_unread_count, cs.participants,
 				CASE WHEN lmc.folder_id != (SELECT id FROM folders WHERE name = 'sent' LIMIT 1)
@@ -706,6 +710,7 @@ export class MailboxDO extends DurableObject<Env> {
 			SELECT e.id, e.subject, e.sender, e.recipient, e.cc, e.bcc, e.date,
 				e.read, e.starred, e.in_reply_to, e.email_references,
 				e.thread_id, e.folder_id,
+				e.triage_category, e.triage_action_required, e.triage_summary,
 				SUBSTR(e.body, 1, 300) as snippet,
 				f.name as folder_name
 			FROM emails e
@@ -735,6 +740,55 @@ export class MailboxDO extends DurableObject<Env> {
 			| { total: number }
 			| undefined;
 		return row?.total ?? 0;
+	}
+
+	// ── Triage ─────────────────────────────────────────────────────
+
+	async setTriage(
+		id: string,
+		t: {
+			category: string;
+			source: string;
+			confidence: number;
+			action_required: boolean;
+			summary: string | null;
+			reason: string;
+		},
+	) {
+		this.db
+			.update(schema.emails)
+			.set({
+				triage_category: t.category,
+				triage_source: t.source,
+				triage_confidence: t.confidence,
+				triage_action_required: t.action_required ? 1 : 0,
+				triage_summary: t.summary,
+				triage_reason: t.reason,
+			})
+			.where(eq(schema.emails.id, id))
+			.run();
+	}
+
+	/**
+	 * True if this mailbox has sent mail to `address`, or has sent/drafted
+	 * anything in `threadId`. Used to keep real conversations in the inbox.
+	 */
+	async hasCorrespondedWith(address: string, threadId?: string | null): Promise<boolean> {
+		const addr = (address || "").toLowerCase().trim();
+		if (!addr && !threadId) return false;
+		const row = [
+			...this.ctx.storage.sql.exec(
+				`SELECT 1 FROM emails
+				 WHERE folder_id = ?1
+				   AND ((?2 != '' AND (',' || REPLACE(LOWER(recipient), ' ', '') || ',') LIKE '%,' || ?2 || ',%')
+				        OR (?3 IS NOT NULL AND thread_id = ?3))
+				 LIMIT 1`,
+				Folders.SENT,
+				addr,
+				threadId ?? null,
+			),
+		];
+		return row.length > 0;
 	}
 
 	// ── Threading helpers (raw SQL) ────────────────────────────────

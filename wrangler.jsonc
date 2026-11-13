@@ -14,7 +14,11 @@
 		// TEAM_DOMAIN may be the base Access URL or the full /cdn-cgi/access/certs URL.
 		// The worker now fails closed outside local development if Access is not configured.
 		"DOMAINS": "example.com",
-		"EMAIL_ADDRESSES": []
+		"EMAIL_ADDRESSES": [],
+		// Mailbox that receives mail for addresses without their own mailbox
+		// (e.g. a catch-all route covering hostmaster@, bookings@ on every domain).
+		// Leave empty to drop such mail.
+		"CATCH_ALL_MAILBOX": ""
 	},
 	"send_email": [
 		{
