@@ -20,6 +20,7 @@ import { handleReplyEmail, handleForwardEmail } from "./routes/reply-forward";
 import { Folders } from "../shared/folders";
 import type { Env } from "./types";
 import { requireMailbox, type MailboxContext } from "./lib/mailbox";
+import { triageEmail } from "./lib/triage";
 
 type AppContext = Context<MailboxContext>;
 
@@ -255,6 +256,12 @@ app.post("/api/v1/mailboxes/:mailboxId/emails/:id/move", async (c: AppContext) =
 	return success ? c.json({ status: "moved" }) : c.json({ error: "Folder not found" }, 400);
 });
 
+app.post("/api/v1/mailboxes/:mailboxId/emails/:id/triage", async (c: AppContext) => {
+	const apply = boolQuery(c, "apply") ?? false;
+	const outcome = await triageEmail(c.env, c.req.param("mailboxId")!, c.req.param("id")!, { apply });
+	return outcome ? c.json(outcome) : c.json({ error: "Email not found or triage disabled" }, 404);
+});
+
 // -- Threads --------------------------------------------------------
 
 app.get("/api/v1/mailboxes/:mailboxId/threads/:threadId", async (c: AppContext) => {
@@ -345,7 +352,7 @@ async function streamToArrayBuffer(stream: ReadableStream, streamSize: number) {
 	return result;
 }
 
-async function receiveEmail(event: { raw: ReadableStream; rawSize: number }, env: Env, ctx: ExecutionContext) {
+async function receiveEmail(event: { raw: ReadableStream; rawSize: number; to?: string }, env: Env, ctx: ExecutionContext) {
 	const rawEmail = await streamToArrayBuffer(event.raw, event.rawSize);
 	const parsedEmail = await new PostalMime().parse(rawEmail);
 
@@ -356,12 +363,22 @@ async function receiveEmail(event: { raw: ReadableStream; rawSize: number }, env
 	const ccRecipients = (parsedEmail.cc || []).map((e) => e.address?.toLowerCase()).filter(Boolean) as string[];
 	const bccRecipients = (parsedEmail.bcc || []).map((e) => e.address?.toLowerCase()).filter(Boolean) as string[];
 
+	// Envelope recipient first: for Email Routing catch-alls it is the address
+	// that actually matched, which may not appear in To (BCC, lists).
+	const envelopeTo = event.to?.toLowerCase();
+	const candidates = [...new Set([envelopeTo, ...allRecipients, ...ccRecipients].filter(Boolean) as string[])];
+	const catchAll = (env.CATCH_ALL_MAILBOX as string | undefined)?.toLowerCase().trim() || undefined;
+
 	let mailboxId: string | undefined;
 	if (allowedAddresses.length > 0) {
-		mailboxId = allRecipients.find((addr) => allowedAddresses.includes(addr));
-		if (!mailboxId) { console.log(`Ignoring email: no recipient matches EMAIL_ADDRESSES.`); return; }
-	} else { mailboxId = allRecipients[0]; }
-	if (!mailboxId) throw new Error("received email with no valid recipient address");
+		mailboxId = candidates.find((addr) => allowedAddresses.includes(addr));
+	} else {
+		for (const addr of candidates) {
+			if (await env.BUCKET.head(`mailboxes/${addr}.json`)) { mailboxId = addr; break; }
+		}
+	}
+	if (!mailboxId && catchAll) mailboxId = catchAll;
+	if (!mailboxId) { console.log(`Ignoring email: no mailbox for ${candidates.join(", ")}`); return; }
 
 	const messageId = crypto.randomUUID();
 	if (!(await env.BUCKET.head(`mailboxes/${mailboxId}.json`))) { console.log(`Ignoring email for ${mailboxId}: mailbox does not exist`); return; }
@@ -402,11 +419,31 @@ async function receiveEmail(event: { raw: ReadableStream; rawSize: number }, env
 		thread_id: threadId, message_id: originalMessageId, raw_headers: JSON.stringify(parsedEmail.headers),
 	}, attachmentData);
 
+	const sender = (parsedEmail.from?.address || "").toLowerCase();
+	const subject = parsedEmail.subject || "";
+	ctx.waitUntil(triageThenDraft(env, mailboxId, messageId, { sender, subject, threadId }));
+}
+
+/**
+ * Classify the new email, file it, and only ask the agent for a draft when
+ * the triage plan says so. If triage is off or throws, fall back to the
+ * original behaviour (draft everything).
+ */
+async function triageThenDraft(env: Env, mailboxId: string, emailId: string, meta: { sender: string; subject: string; threadId: string }) {
+	let draft = true;
+	let summary: string | undefined;
+	try {
+		const outcome = await triageEmail(env, mailboxId, emailId);
+		if (outcome) { draft = outcome.plan.draft; summary = outcome.result.summary; }
+	} catch (e) {
+		console.error("Triage failed, falling back to auto-draft:", (e as Error).message);
+	}
+	if (!draft) return;
 	const agentStub = env.EMAIL_AGENT.get(env.EMAIL_AGENT.idFromName(mailboxId));
-	ctx.waitUntil(agentStub.fetch(new Request("https://agents/onNewEmail", {
+	await agentStub.fetch(new Request("https://agents/onNewEmail", {
 		method: "POST", headers: { "Content-Type": "application/json" },
-		body: JSON.stringify({ mailboxId, emailId: messageId, sender: (parsedEmail.from?.address || "").toLowerCase(), subject: parsedEmail.subject || "", threadId }),
-	})).catch((e) => console.error("Auto-draft trigger failed:", (e as Error).message)));
+		body: JSON.stringify({ mailboxId, emailId, ...meta, triageSummary: summary }),
+	})).catch((e) => console.error("Auto-draft trigger failed:", (e as Error).message));
 }
 
 export { app, receiveEmail };

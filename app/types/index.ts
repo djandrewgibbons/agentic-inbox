@@ -2,6 +2,8 @@
 // Licensed under the Apache 2.0 license found in the LICENSE file or at:
 //     https://opensource.org/licenses/Apache-2.0
 
+import type { TriageSettings } from "shared/triage";
+
 export interface SignatureSettings {
 	enabled: boolean;
 	text: string;
@@ -14,6 +16,7 @@ export interface MailboxSettings {
 	signature?: SignatureSettings;
 	autoReply?: { enabled: boolean; subject: string; message: string };
 	agentSystemPrompt?: string;
+	triage?: TriageSettings;
 }
 
 export interface Mailbox {
@@ -48,6 +51,11 @@ export interface Email {
 	participants?: string;
 	needs_reply?: boolean;
 	has_draft?: boolean;
+	// Inbound triage (null for mail received before triage existed)
+	triage_category?: string | null;
+	triage_summary?: string | null;
+	triage_action_required?: boolean | number | null;
+	triage_reason?: string | null;
 }
 
 export interface Attachment {

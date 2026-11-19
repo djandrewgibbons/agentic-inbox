@@ -22,6 +22,7 @@ import { useParams } from "react-router";
 import { Folders } from "shared/folders";
 import { formatListDate } from "shared/dates";
 import MailboxSplitView from "~/components/MailboxSplitView";
+import TriageBadge from "~/components/TriageBadge";
 import { getSnippetText } from "~/lib/utils";
 import {
 	useDeleteEmail,
@@ -372,6 +373,11 @@ export default function EmailListRoute() {
 														{email.thread_count}
 													</span>
 												)}
+												<TriageBadge
+													category={email.triage_category}
+													summary={email.triage_summary}
+													actionRequired={email.triage_action_required}
+												/>
 												{email.has_draft && (
 													<span className="shrink-0 text-xs text-kumo-destructive font-medium">
 														Draft
