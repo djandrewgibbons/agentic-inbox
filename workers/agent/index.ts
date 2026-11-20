@@ -269,6 +269,13 @@ function createEmailTools(env: Env, mailboxId: string) {
 	};
 }
 
+// Workers AI model for chat and auto-draft. Must support function calling.
+const AGENT_MODEL = "@cf/zai-org/glm-5.3";
+
+function errorMessage(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
+}
+
 // Use `any` for the Env generic to avoid type conflicts between the custom
 // SEND_EMAIL binding shape and the AIChatAgent constraint.  The actual env
 // is fully typed inside the tools via the closure.
@@ -281,15 +288,18 @@ export class EmailAgent extends AIChatAgent<any> {
 		const systemPrompt = await getSystemPrompt(env, mailboxId);
 
 		const result = streamText({
-			model: workersai("@cf/moonshotai/kimi-k2.5"),
+			model: workersai(AGENT_MODEL),
 			system: systemPrompt,
 			messages: await convertToModelMessages(this.messages),
 			tools,
 			stopWhen: stepCountIs(5),
 			onFinish,
+			onError: ({ error }) => {
+				console.error("Agent chat failed:", errorMessage(error));
+			},
 		});
 
-		return result.toUIMessageStreamResponse();
+		return result.toUIMessageStreamResponse({ onError: errorMessage });
 	}
 
 	/**
@@ -465,7 +475,7 @@ Based on the email content and thread context above, draft a reply using draft_r
 
 		try {
 			const result = await generateText({
-				model: workersai("@cf/moonshotai/kimi-k2.5"),
+				model: workersai(AGENT_MODEL),
 				system: systemPrompt,
 				messages: await convertToModelMessages(messages),
 				tools,

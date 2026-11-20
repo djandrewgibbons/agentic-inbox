@@ -308,7 +308,7 @@ function AgentChatConnected({
 	const { startCompose } = useUIStore();
 
 	const agent = useAgent({ agent: "EmailAgent", name: mailboxId });
-	const { messages, sendMessage, status, setMessages, stop } =
+	const { messages, sendMessage, status, setMessages, stop, error } =
 		useAgentChat({ agent });
 	const isStreaming = status === "streaming" || status === "submitted";
 
@@ -464,6 +464,14 @@ function AgentChatConnected({
 										Thinking...
 									</span>
 								</div>
+							</div>
+						)}
+						{error && !isStreaming && (
+							<div
+								className="px-3 py-2 rounded-lg border border-kumo-line text-xs text-kumo-error"
+								title={error.message}
+							>
+								Agent error: {error.message}
 							</div>
 						)}
 					</div>
