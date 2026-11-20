@@ -315,7 +315,7 @@ function AgentChatConnected({
 	useEffect(() => {
 		const el = scrollRef.current;
 		if (el) el.scrollTop = el.scrollHeight;
-	}, [messages]);
+	}, [messages, error, status]);
 
 	useEffect(() => {
 		inputRef.current?.focus();
