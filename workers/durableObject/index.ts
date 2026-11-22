@@ -923,4 +923,25 @@ export class MailboxDO extends DurableObject<Env> {
 			this.db.insert(schema.attachments).values(attachments).run();
 		}
 	}
+
+	// ── Import ─────────────────────────────────────────────────────
+
+	/** True if this exact message, or one with the same Message-ID, is already in the folder. */
+	async isImported(folderId: string, id: string, messageId: string | null): Promise<boolean> {
+		const sameMessage = messageId
+			? or(eq(schema.emails.id, id), and(eq(schema.emails.folder_id, folderId), eq(schema.emails.message_id, messageId)))
+			: eq(schema.emails.id, id);
+		return !!this.db.select({ id: schema.emails.id }).from(schema.emails).where(sameMessage).limit(1).get();
+	}
+
+	/**
+	 * Insert an imported email unless it is already there. The check and the
+	 * insert run in one call, so concurrent uploads of the same message
+	 * cannot both land. Returns false for a duplicate.
+	 */
+	async importEmail(folderId: string, email: EmailData, attachments: AttachmentData[]): Promise<boolean> {
+		if (await this.isImported(folderId, email.id, email.message_id ?? null)) return false;
+		await this.createEmail(folderId, email, attachments);
+		return true;
+	}
 }

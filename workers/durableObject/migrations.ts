@@ -179,4 +179,9 @@ export const mailboxMigrations: Migration[] = [
             ALTER TABLE emails ADD COLUMN triage_reason TEXT;
         `),
 	},
+	{
+		// Mail import looks messages up by Message-ID to skip duplicates.
+		name: "10_add_message_id_index",
+		sql: `CREATE INDEX IF NOT EXISTS idx_emails_message_id ON emails(message_id);`,
+	},
 ];

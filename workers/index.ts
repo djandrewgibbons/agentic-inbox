@@ -278,6 +278,86 @@ app.post("/api/v1/mailboxes/:mailboxId/threads/:threadId/read", async (c: AppCon
 app.post("/api/v1/mailboxes/:mailboxId/emails/:id/reply", handleReplyEmail);
 app.post("/api/v1/mailboxes/:mailboxId/emails/:id/forward", handleForwardEmail);
 
+const MAX_EMAIL_SIZE = 25 * 1024 * 1024;
+
+// -- Import existing mail -------------------------------------------
+
+// A Durable Object SQLite row is limited to 2 MB, so oversized bodies and headers are trimmed.
+const MAX_IMPORT_BODY_BYTES = 1_500_000;
+const MAX_IMPORT_HEADER_BYTES = 256_000;
+const byteLength = (s: string) => new TextEncoder().encode(s).byteLength;
+
+/** Stable ID for an imported message, so the same bytes in the same folder never import twice. */
+async function importId(folderId: string, raw: ArrayBuffer) {
+	const prefix = new TextEncoder().encode(`${folderId}\n`);
+	const data = new Uint8Array(prefix.byteLength + raw.byteLength);
+	data.set(prefix);
+	data.set(new Uint8Array(raw), prefix.byteLength);
+	const hex = [...new Uint8Array(await crypto.subtle.digest("SHA-256", data))].map((b) => b.toString(16).padStart(2, "0")).join("");
+	return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+}
+
+/**
+ * Import one raw RFC 822 message (the body of the request) into a folder.
+ * Unlike inbound mail this keeps the message's own date and never runs
+ * triage, auto-draft or forwarding.
+ */
+app.post("/api/v1/mailboxes/:mailboxId/import", async (c: AppContext) => {
+	const stub = c.var.mailboxStub;
+	const folderId = c.req.query("folder") || Folders.INBOX;
+	const folders = await stub.getFolders();
+	if (!folders.some((f) => f.id === folderId)) return c.json({ error: `Folder "${folderId}" not found` }, 400);
+
+	if (Number(c.req.header("content-length") || 0) > MAX_EMAIL_SIZE) return c.json({ error: "Message is larger than 25 MB" }, 413);
+	const raw = await c.req.arrayBuffer();
+	if (raw.byteLength === 0) return c.json({ error: "Empty message" }, 400);
+	if (raw.byteLength > MAX_EMAIL_SIZE) return c.json({ error: "Message is larger than 25 MB" }, 413);
+
+	const parsed = await new PostalMime().parse(raw);
+	if (!parsed.from?.address && !parsed.subject && !parsed.messageId && !parsed.date) {
+		return c.json({ error: "Not an email message" }, 422);
+	}
+
+	const id = await importId(folderId, raw);
+	const messageId = parsed.messageId ? extractMsgId(parsed.messageId) : null;
+	if (await stub.isImported(folderId, id, messageId)) return c.json({ status: "duplicate" });
+
+	const addresses = (list: ParsedEmail["to"]) => (list || []).map((a) => a.address?.toLowerCase()).filter(Boolean).join(", ");
+	const inReplyTo = parsed.inReplyTo ? extractMsgId(parsed.inReplyTo) : null;
+	const references = parsed.references ? parsed.references.split(/\s+/).filter(Boolean).map(extractMsgId) : [];
+	const date = parsed.date && !Number.isNaN(Date.parse(parsed.date)) ? new Date(parsed.date).toISOString() : new Date().toISOString();
+
+	let body = parsed.html || parsed.text || "";
+	let trimmed = false;
+	if (byteLength(body) > MAX_IMPORT_BODY_BYTES) {
+		trimmed = true;
+		body = parsed.text || body;
+		while (byteLength(body) > MAX_IMPORT_BODY_BYTES) body = body.slice(0, Math.floor(body.length * 0.8));
+		body += "\n\n[Message trimmed during import: the original was too large to store.]";
+	}
+	const rawHeaders = JSON.stringify(parsed.headers);
+
+	const attachments = await storeParsedAttachments(c.env.BUCKET, id, parsed.attachments);
+	const inserted = await stub.importEmail(folderId, {
+		id, subject: parsed.subject || "",
+		sender: (parsed.from?.address || "").toLowerCase(), recipient: addresses(parsed.to),
+		cc: addresses(parsed.cc) || null, bcc: addresses(parsed.bcc) || null,
+		date, body,
+		read: boolQuery(c, "read") ?? true, starred: boolQuery(c, "starred") ?? false,
+		in_reply_to: inReplyTo, email_references: references.length > 0 ? JSON.stringify(references) : null,
+		// The root's own Message-ID is the thread ID, so replies join it whatever order they arrive in.
+		thread_id: references[0] || inReplyTo || messageId || id, message_id: messageId,
+		raw_headers: byteLength(rawHeaders) > MAX_IMPORT_HEADER_BYTES ? null : rawHeaders,
+	}, attachments);
+
+	if (!inserted) {
+		// Lost a race with an identical upload: remove the attachments just stored.
+		if (attachments.length > 0) await c.env.BUCKET.delete(attachments.map((a) => `attachments/${id}/${a.id}/${a.filename}`));
+		return c.json({ status: "duplicate" });
+	}
+	return c.json({ status: trimmed ? "trimmed" : "imported", id }, 201);
+});
+
 // -- Folders --------------------------------------------------------
 
 app.get("/api/v1/mailboxes/:mailboxId/folders", async (c: AppContext) => c.json(await c.var.mailboxStub.getFolders()));
@@ -334,8 +414,6 @@ app.get("/api/v1/mailboxes/:mailboxId/emails/:emailId/attachments/:attachmentId"
 
 // -- Receive inbound email ------------------------------------------
 
-const MAX_EMAIL_SIZE = 25 * 1024 * 1024;
-
 async function streamToArrayBuffer(stream: ReadableStream, streamSize: number) {
 	if (streamSize > MAX_EMAIL_SIZE) throw new Error(`Email too large: ${streamSize} bytes exceeds ${MAX_EMAIL_SIZE} byte limit`);
 	if (streamSize <= 0) throw new Error(`Invalid stream size: ${streamSize}`);
@@ -350,6 +428,24 @@ async function streamToArrayBuffer(stream: ReadableStream, streamSize: number) {
 		bytesRead += value.length;
 	}
 	return result;
+}
+
+type ParsedEmail = Awaited<ReturnType<PostalMime["parse"]>>;
+
+const extractMsgId = (s: string) => { const m = s.match(/<([^>]+)>/); return m ? m[1] : s.trim().split(/\s+/)[0]; };
+
+/** Store a parsed message's attachments in R2 and return their metadata rows. */
+async function storeParsedAttachments(bucket: Env["BUCKET"], emailId: string, attachments: ParsedEmail["attachments"] | undefined) {
+	const stored: StoredAttachment[] = [];
+	for (const att of attachments ?? []) {
+		const attId = crypto.randomUUID();
+		const filename = (att.filename || "untitled").replace(/[\/\\:*?"<>|\x00-\x1f]/g, "_");
+		await bucket.put(`attachments/${emailId}/${attId}/${filename}`, att.content);
+		stored.push({ id: attId, email_id: emailId, filename, mimetype: att.mimeType,
+			size: typeof att.content === "string" ? att.content.length : att.content.byteLength,
+			content_id: att.contentId || null, disposition: att.disposition || "attachment" });
+	}
+	return stored;
 }
 
 async function receiveEmail(event: { raw: ReadableStream; rawSize: number; to?: string }, env: Env, ctx: ExecutionContext) {
@@ -385,19 +481,8 @@ async function receiveEmail(event: { raw: ReadableStream; rawSize: number; to?: 
 
 	const stub = env.MAILBOX.get(env.MAILBOX.idFromName(mailboxId));
 
-	const attachmentData: StoredAttachment[] = [];
-	if (parsedEmail.attachments) {
-		for (const att of parsedEmail.attachments) {
-			const attId = crypto.randomUUID();
-			const filename = (att.filename || "untitled").replace(/[\/\\:*?"<>|\x00-\x1f]/g, "_");
-			await env.BUCKET.put(`attachments/${messageId}/${attId}/${filename}`, att.content);
-			attachmentData.push({ id: attId, email_id: messageId, filename, mimetype: att.mimeType,
-				size: typeof att.content === "string" ? att.content.length : att.content.byteLength,
-				content_id: att.contentId || null, disposition: att.disposition || "attachment" });
-		}
-	}
+	const attachmentData = await storeParsedAttachments(env.BUCKET, messageId, parsedEmail.attachments);
 
-	const extractMsgId = (s: string) => { const m = s.match(/<([^>]+)>/); return m ? m[1] : s.trim().split(/\s+/)[0]; };
 	const inReplyTo = parsedEmail.inReplyTo ? extractMsgId(parsedEmail.inReplyTo) : null;
 	const emailReferences = parsedEmail.references ? parsedEmail.references.split(/\s+/).filter(Boolean).map(extractMsgId) : [];
 	let threadId = emailReferences[0] || inReplyTo || messageId;

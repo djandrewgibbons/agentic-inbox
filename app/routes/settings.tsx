@@ -18,6 +18,7 @@ import {
 } from "shared/triage";
 import { useEffect, useMemo, useState } from "react";
 import { useParams } from "react-router";
+import ImportMail from "~/components/ImportMail";
 import { useMailbox, useUpdateMailbox } from "~/queries/mailboxes";
 
 // Placeholder shown in the textarea when no custom prompt is set.
@@ -283,6 +284,8 @@ export default function SettingsRoute() {
 						Save Changes
 					</Button>
 				</div>
+
+				{mailboxId && <ImportMail mailboxId={mailboxId} />}
 			</div>
 		</div>
 	);
