@@ -6,6 +6,7 @@
 # Repository variables (override wrangler.jsonc, so addresses stay out of the repo):
 #   DOMAINS             comma-separated domains to receive mail for
 #   CATCH_ALL_MAILBOX   mailbox for addresses without their own mailbox
+#                       (one address, or "a.com=x@a.com, b.com=x@a.com, default@c.com")
 name: Deploy
 
 on:

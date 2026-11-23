@@ -17,6 +17,7 @@
 		"EMAIL_ADDRESSES": [],
 		// Mailbox that receives mail for addresses without their own mailbox
 		// (e.g. a catch-all route covering hostmaster@, bookings@ on every domain).
+		// One address, or per domain: "a.com=x@a.com, b.com=x@a.com, default@c.com".
 		// Leave empty to drop such mail.
 		"CATCH_ALL_MAILBOX": ""
 	},

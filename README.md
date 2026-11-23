@@ -61,7 +61,7 @@ Classification order: your rules (Settings > Smart triage), built-in sender rule
 
 Forwarding: set "Forward a copy to" in Settings > Smart triage and pick which categories get forwarded (default: Needs reply, plus anything urgent). Copies are sent from the mailbox address with Reply-To set to the original sender; the mail is still filed in the mailbox.
 
-Set `CATCH_ALL_MAILBOX` to deliver mail for addresses without their own mailbox (e.g. `hostmaster@`, `bookings@` on every domain) into one mailbox.
+Set `CATCH_ALL_MAILBOX` to deliver mail for addresses without their own mailbox (e.g. `hostmaster@`, `bookings@` on every domain) into one mailbox. To use a different mailbox per domain, list `domain=mailbox` entries separated by commas, with an optional bare address as the default for every other domain: `example.com=info@example.com, example.org=info@example.com, me@example.net`. Each target mailbox must already exist.
 
 Tests: `npm test`.
 

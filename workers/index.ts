@@ -18,6 +18,7 @@ import {
 import { SendEmailRequestSchema } from "./lib/schemas";
 import { handleReplyEmail, handleForwardEmail } from "./routes/reply-forward";
 import { Folders } from "../shared/folders";
+import { parseCatchAll, resolveCatchAll } from "../shared/routing";
 import type { Env } from "./types";
 import { requireMailbox, type MailboxContext } from "./lib/mailbox";
 import { triageEmail } from "./lib/triage";
@@ -472,7 +473,9 @@ async function receiveEmail(event: { raw: ReadableStream; rawSize: number; to?: 
 	// that actually matched, which may not appear in To (BCC, lists).
 	const envelopeTo = event.to?.toLowerCase();
 	const candidates = [...new Set([envelopeTo, ...allRecipients, ...ccRecipients].filter(Boolean) as string[])];
-	const catchAll = (env.CATCH_ALL_MAILBOX as string | undefined)?.toLowerCase().trim() || undefined;
+	const catchAllConfig = parseCatchAll(env.CATCH_ALL_MAILBOX as string | undefined);
+	if (catchAllConfig.errors.length > 0) console.error(`Ignoring invalid CATCH_ALL_MAILBOX entries: ${catchAllConfig.errors.join(", ")}`);
+	const catchAll = resolveCatchAll(catchAllConfig, candidates);
 
 	let mailboxId: string | undefined;
 	if (allowedAddresses.length > 0) {
