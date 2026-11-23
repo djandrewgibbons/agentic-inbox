@@ -65,6 +65,15 @@ Set `CATCH_ALL_MAILBOX` to deliver mail for addresses without their own mailbox 
 
 Tests: `npm test`.
 
+## Importing existing mail
+
+Settings > Import mail takes an mbox file and uploads it one message at a time from the browser.
+
+1. In Mail on macOS, select a mailbox and choose Mailbox > Export Mailbox.
+2. In Settings > Import mail, pick the `mbox` file inside the exported `.mbox` folder, choose the target folder, and click Import.
+
+Imported mail keeps its original date and skips triage, auto-draft and forwarding. A message already in the target folder (same Message-ID or same bytes) is skipped, so an interrupted import can be run again. Messages over 25 MB are rejected, and bodies over about 1.5 MB are trimmed to fit the Durable Object row limit. Read and flagged state is not in Mail's export, so the page sets read or unread for the whole file. The endpoint is `POST /api/v1/mailboxes/:mailbox/import?folder=inbox&read=true` with one raw RFC 822 message as the body.
+
 ## Stack
 
 - **Frontend:** React 19, React Router v7, Tailwind CSS, Zustand, TipTap, `@cloudflare/kumo`

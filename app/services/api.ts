@@ -5,6 +5,7 @@
 import type { Email, Folder, Mailbox } from "~/types";
 
 const REQUEST_TIMEOUT_MS = 30_000;
+const IMPORT_TIMEOUT_MS = 120_000;
 
 export class ApiError extends Error {
 	status: number;
@@ -124,9 +125,9 @@ const api = {
 	moveEmail: (mailboxId: string, id: string, folderId: string) =>
 		post<void>(`/api/v1/mailboxes/${mailboxId}/emails/${id}/move`, { folderId }),
 	getThread: (mailboxId: string, threadId: string, opts?: { signal?: AbortSignal }) =>
-		get<Email[]>(`/api/v1/mailboxes/${mailboxId}/threads/${threadId}`, { signal: opts?.signal }),
+		get<Email[]>(`/api/v1/mailboxes/${mailboxId}/threads/${encodeURIComponent(threadId)}`, { signal: opts?.signal }),
 	markThreadRead: (mailboxId: string, threadId: string) =>
-		post<void>(`/api/v1/mailboxes/${mailboxId}/threads/${threadId}/read`),
+		post<void>(`/api/v1/mailboxes/${mailboxId}/threads/${encodeURIComponent(threadId)}/read`),
 	getAttachment: (mailboxId: string, emailId: string, attachmentId: string) =>
 		get<Blob>(`/api/v1/mailboxes/${mailboxId}/emails/${emailId}/attachments/${attachmentId}`, { responseType: "blob" }),
 	saveDraft: (
@@ -146,6 +147,20 @@ const api = {
 		post<void>(`/api/v1/mailboxes/${mailboxId}/emails/${emailId}/reply`, email),
 	forwardEmail: (mailboxId: string, emailId: string, email: unknown) =>
 		post<void>(`/api/v1/mailboxes/${mailboxId}/emails/${emailId}/forward`, email),
+
+	// Import: one raw RFC 822 message per request
+	importMessage: async (mailboxId: string, message: Blob, params: Record<string, string>, signal?: AbortSignal) => {
+		const timeout = AbortSignal.timeout(IMPORT_TIMEOUT_MS);
+		const res = await fetch(`/api/v1/mailboxes/${mailboxId}/import?${new URLSearchParams(params)}`, {
+			method: "POST",
+			headers: { "Content-Type": "message/rfc822" },
+			body: message,
+			signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+		});
+		const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+		if (!res.ok) throw new ApiError(res.status, body);
+		return body as { status: "imported" | "trimmed" | "duplicate"; id?: string };
+	},
 
 	// Folders
 	listFolders: (mailboxId: string) =>

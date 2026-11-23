@@ -99,6 +99,9 @@ interface AttachmentData {
 	disposition?: string | null;
 }
 
+/** Attachment rows per INSERT: 14 rows x 7 columns stays under the 100 bound-value limit. */
+const ATTACHMENT_INSERT_BATCH = 14;
+
 export class MailboxDO extends DurableObject<Env> {
 	declare __DURABLE_OBJECT_BRAND: never;
 	db: ReturnType<typeof drizzle>;
@@ -478,14 +481,12 @@ export class MailboxDO extends DurableObject<Env> {
 
 		if (emailRows.length === 0) return [];
 
-		const emailIds = emailRows.map((e) => e.id as string);
-
-		// Batch-fetch all attachments for the thread in a single query
-		const placeholders = emailIds.map((_, i) => `?${i + 1}`).join(",");
+		// Fetch all attachments for the thread in a single query. A join keeps
+		// the bound parameters under SQLite's limit however long the thread is.
 		const attachmentRows = [
 			...this.ctx.storage.sql.exec(
-				`SELECT * FROM attachments WHERE email_id IN (${placeholders})`,
-				...emailIds,
+				`SELECT a.* FROM attachments a JOIN emails e ON a.email_id = e.id WHERE e.thread_id = ?1`,
+				threadId,
 			),
 		] as any[];
 
@@ -876,6 +877,7 @@ export class MailboxDO extends DurableObject<Env> {
 		folder: string,
 		email: EmailData,
 		attachments: AttachmentData[],
+		forceSentRead = true,
 	) {
 		// Resolve folder name or ID to the actual folder ID.
 		const folderRow = this.db
@@ -897,30 +899,61 @@ export class MailboxDO extends DurableObject<Env> {
 
 		// Sent emails are always read — the sender obviously knows what they wrote.
 		// This prevents sent replies from inflating thread_unread_count.
-		this.db
-			.insert(schema.emails)
-			.values({
-				id: email.id,
-				folder_id: folderId,
-				subject: email.subject,
-				sender: email.sender,
-				recipient: email.recipient,
-				cc: email.cc ?? null,
-				bcc: email.bcc ?? null,
-				date: email.date,
-				read: isSent ? 1 : (email.read ? 1 : 0),
-				starred: email.starred ? 1 : 0,
-				body: email.body,
-				in_reply_to: email.in_reply_to ?? null,
-				email_references: email.email_references ?? null,
-				thread_id: email.thread_id ?? null,
-				message_id: email.message_id ?? null,
-				raw_headers: email.raw_headers ?? null,
-			})
-			.run();
+		// Imports pass forceSentRead = false to keep the read state asked for.
+		this.ctx.storage.transactionSync(() => {
+			this.db
+				.insert(schema.emails)
+				.values({
+					id: email.id,
+					folder_id: folderId,
+					subject: email.subject,
+					sender: email.sender,
+					recipient: email.recipient,
+					cc: email.cc ?? null,
+					bcc: email.bcc ?? null,
+					date: email.date,
+					read: isSent && forceSentRead ? 1 : (email.read ? 1 : 0),
+					starred: email.starred ? 1 : 0,
+					body: email.body,
+					in_reply_to: email.in_reply_to ?? null,
+					email_references: email.email_references ?? null,
+					thread_id: email.thread_id ?? null,
+					message_id: email.message_id ?? null,
+					raw_headers: email.raw_headers ?? null,
+				})
+				.run();
 
-		if (attachments.length > 0) {
-			this.db.insert(schema.attachments).values(attachments).run();
-		}
+			// SQLite in a Durable Object binds at most 100 values per statement;
+			// an attachment row has 7 columns.
+			for (let i = 0; i < attachments.length; i += ATTACHMENT_INSERT_BATCH) {
+				this.db.insert(schema.attachments).values(attachments.slice(i, i + ATTACHMENT_INSERT_BATCH)).run();
+			}
+		});
+	}
+
+	// ── Import ─────────────────────────────────────────────────────
+
+	/** True if this exact message, or one with the same Message-ID, is already in the folder. */
+	async isImported(folderId: string, id: string, messageId: string | null): Promise<boolean> {
+		const sameMessage = messageId
+			? or(eq(schema.emails.id, id), and(eq(schema.emails.folder_id, folderId), eq(schema.emails.message_id, messageId)))
+			: eq(schema.emails.id, id);
+		return !!this.db.select({ id: schema.emails.id }).from(schema.emails).where(sameMessage).limit(1).get();
+	}
+
+	/**
+	 * Insert an imported email unless it is already there. The check and the
+	 * insert run in one call, so concurrent uploads of the same message
+	 * cannot both land. Returns false for a duplicate.
+	 */
+	async importEmail(folderId: string, email: EmailData, attachments: AttachmentData[]): Promise<boolean> {
+		if (await this.isImported(folderId, email.id, email.message_id ?? null)) return false;
+		await this.createEmail(folderId, email, attachments, false);
+		return true;
+	}
+
+	/** True if a folder with this ID exists. */
+	async hasFolder(folderId: string): Promise<boolean> {
+		return !!this.db.select({ id: schema.folders.id }).from(schema.folders).where(eq(schema.folders.id, folderId)).limit(1).get();
 	}
 }
