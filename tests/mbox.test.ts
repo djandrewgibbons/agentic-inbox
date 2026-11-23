@@ -56,3 +56,12 @@ test("a file without separators is one message", async () => {
 	assert.deepEqual(await messages(M1), [M1]);
 	assert.deepEqual(await messages(""), []);
 });
+
+test("an .eml with a separator-like body line is one message", async () => {
+	const eml = M1 + SEP1 + "More body\n";
+	assert.deepEqual(await messages(eml), [eml]);
+});
+
+test("a file starting with an unrecognised From line throws", async () => {
+	await assert.rejects(messages("From alice@example.com 2024-01-01T10:00:00Z\n" + M1), /Unrecognised mbox separator/);
+});

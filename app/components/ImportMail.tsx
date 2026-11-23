@@ -13,6 +13,8 @@ import api, { ApiError } from "~/services/api";
 
 const MAX_MESSAGE_BYTES = 25 * 1024 * 1024;
 const CONCURRENCY = 4;
+/** Messages above this size upload one at a time, to stay inside the Worker's memory limit. */
+const LARGE_MESSAGE_BYTES = 5 * 1024 * 1024;
 const MAX_ATTEMPTS = 3;
 const MAX_LISTED_FAILURES = 50;
 
@@ -83,6 +85,15 @@ export default function ImportMail({ mailboxId }: { mailboxId: string }) {
 			publish();
 
 			const params = { folder, read: String(markRead) };
+			let largeUploads: Promise<unknown> = Promise.resolve();
+			const upload = (range: MboxRange) => {
+				const send = () => uploadWithRetry(mailboxId, file.slice(range.start, range.end), params, abort.signal);
+				if (range.end - range.start <= LARGE_MESSAGE_BYTES) return send();
+				const run = largeUploads.then(send);
+				// The queue only orders uploads; each caller still sees its own result or error.
+				largeUploads = run.catch(() => undefined);
+				return run;
+			};
 			let next = 0;
 			const worker = async () => {
 				while (!abort.signal.aborted) {
@@ -93,7 +104,7 @@ export default function ImportMail({ mailboxId }: { mailboxId: string }) {
 						fail(index, range, "larger than 25 MB");
 					} else {
 						try {
-							const { status } = await uploadWithRetry(mailboxId, file.slice(range.start, range.end), params, abort.signal);
+							const { status } = await upload(range);
 							if (status === "duplicate") state.duplicate++;
 							else state.imported++;
 							if (status === "trimmed") state.trimmed++;

@@ -125,9 +125,9 @@ const api = {
 	moveEmail: (mailboxId: string, id: string, folderId: string) =>
 		post<void>(`/api/v1/mailboxes/${mailboxId}/emails/${id}/move`, { folderId }),
 	getThread: (mailboxId: string, threadId: string, opts?: { signal?: AbortSignal }) =>
-		get<Email[]>(`/api/v1/mailboxes/${mailboxId}/threads/${threadId}`, { signal: opts?.signal }),
+		get<Email[]>(`/api/v1/mailboxes/${mailboxId}/threads/${encodeURIComponent(threadId)}`, { signal: opts?.signal }),
 	markThreadRead: (mailboxId: string, threadId: string) =>
-		post<void>(`/api/v1/mailboxes/${mailboxId}/threads/${threadId}/read`),
+		post<void>(`/api/v1/mailboxes/${mailboxId}/threads/${encodeURIComponent(threadId)}/read`),
 	getAttachment: (mailboxId: string, emailId: string, attachmentId: string) =>
 		get<Blob>(`/api/v1/mailboxes/${mailboxId}/emails/${emailId}/attachments/${attachmentId}`, { responseType: "blob" }),
 	saveDraft: (

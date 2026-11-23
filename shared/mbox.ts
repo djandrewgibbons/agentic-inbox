@@ -35,7 +35,9 @@ export function isMboxSeparator(line: string): boolean {
 
 /**
  * Yield the byte range of every message in an mbox file.
- * A file with no separators is treated as one message (a plain .eml file).
+ * A file whose first line is not a separator is treated as one message (a
+ * plain .eml file). A file whose first line starts with "From " but is not a
+ * recognised separator throws, rather than importing as one bogus message.
  */
 export async function* splitMbox(
 	file: Blob,
@@ -45,10 +47,22 @@ export async function* splitMbox(
 	// A chunk must be able to hold a whole separator line.
 	chunkSize = Math.max(chunkSize, MAX_SEPARATOR * 2);
 	const decoder = new TextDecoder("latin1");
+	if (size === 0) return;
+
+	const head = new Uint8Array(await file.slice(0, MAX_SEPARATOR + 1).arrayBuffer());
+	const headEnd = head.indexOf(LF);
+	const firstLine = decoder.decode(head.subarray(0, headEnd === -1 ? head.length : headEnd));
+	if (!isMboxSeparator(firstLine)) {
+		if (firstLine.startsWith("From ")) {
+			throw new Error(`Unrecognised mbox separator line: "${firstLine.slice(0, 80)}"`);
+		}
+		yield { start: 0, end: size };
+		return;
+	}
+
 	let offset = 0;
 	let atLineStart = true;
 	let messageStart = -1;
-	let found = false;
 
 	while (offset < size) {
 		const chunk = new Uint8Array(await file.slice(offset, offset + chunkSize).arrayBuffer());
@@ -70,7 +84,6 @@ export async function* splitMbox(
 						if (messageStart >= 0 && offset + i > messageStart) {
 							yield { start: messageStart, end: offset + i };
 						}
-						found = true;
 						messageStart = offset + Math.min(end + 1, chunk.length);
 					}
 				}
@@ -86,9 +99,5 @@ export async function* splitMbox(
 		offset = next;
 	}
 
-	if (found) {
-		if (messageStart >= 0 && messageStart < size) yield { start: messageStart, end: size };
-	} else if (size > 0) {
-		yield { start: 0, end: size };
-	}
+	if (messageStart >= 0 && messageStart < size) yield { start: messageStart, end: size };
 }

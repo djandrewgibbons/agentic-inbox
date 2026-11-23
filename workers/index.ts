@@ -289,10 +289,12 @@ const byteLength = (s: string) => new TextEncoder().encode(s).byteLength;
 
 /** Stable ID for an imported message, so the same bytes in the same folder never import twice. */
 async function importId(folderId: string, raw: ArrayBuffer) {
+	// Hash the raw bytes, then the folder plus that hash, so the message is never copied.
+	const rawHash = new Uint8Array(await crypto.subtle.digest("SHA-256", raw));
 	const prefix = new TextEncoder().encode(`${folderId}\n`);
-	const data = new Uint8Array(prefix.byteLength + raw.byteLength);
+	const data = new Uint8Array(prefix.byteLength + rawHash.byteLength);
 	data.set(prefix);
-	data.set(new Uint8Array(raw), prefix.byteLength);
+	data.set(rawHash, prefix.byteLength);
 	const hex = [...new Uint8Array(await crypto.subtle.digest("SHA-256", data))].map((b) => b.toString(16).padStart(2, "0")).join("");
 	return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
 }
@@ -305,8 +307,7 @@ async function importId(folderId: string, raw: ArrayBuffer) {
 app.post("/api/v1/mailboxes/:mailboxId/import", async (c: AppContext) => {
 	const stub = c.var.mailboxStub;
 	const folderId = c.req.query("folder") || Folders.INBOX;
-	const folders = await stub.getFolders();
-	if (!folders.some((f) => f.id === folderId)) return c.json({ error: `Folder "${folderId}" not found` }, 400);
+	if (!(await stub.hasFolder(folderId))) return c.json({ error: `Folder "${folderId}" not found` }, 400);
 
 	if (Number(c.req.header("content-length") || 0) > MAX_EMAIL_SIZE) return c.json({ error: "Message is larger than 25 MB" }, 413);
 	const raw = await c.req.arrayBuffer();
@@ -338,21 +339,29 @@ app.post("/api/v1/mailboxes/:mailboxId/import", async (c: AppContext) => {
 	const rawHeaders = JSON.stringify(parsed.headers);
 
 	const attachments = await storeParsedAttachments(c.env.BUCKET, id, parsed.attachments);
-	const inserted = await stub.importEmail(folderId, {
-		id, subject: parsed.subject || "",
-		sender: (parsed.from?.address || "").toLowerCase(), recipient: addresses(parsed.to),
-		cc: addresses(parsed.cc) || null, bcc: addresses(parsed.bcc) || null,
-		date, body,
-		read: boolQuery(c, "read") ?? true, starred: boolQuery(c, "starred") ?? false,
-		in_reply_to: inReplyTo, email_references: references.length > 0 ? JSON.stringify(references) : null,
-		// The root's own Message-ID is the thread ID, so replies join it whatever order they arrive in.
-		thread_id: references[0] || inReplyTo || messageId || id, message_id: messageId,
-		raw_headers: byteLength(rawHeaders) > MAX_IMPORT_HEADER_BYTES ? null : rawHeaders,
-	}, attachments);
+	const deleteAttachments = () => c.env.BUCKET.delete(attachments.map((a) => `attachments/${id}/${a.id}/${a.filename}`));
+	let inserted: boolean;
+	try {
+		inserted = await stub.importEmail(folderId, {
+			id, subject: parsed.subject || "",
+			sender: (parsed.from?.address || "").toLowerCase(), recipient: addresses(parsed.to),
+			cc: addresses(parsed.cc) || null, bcc: addresses(parsed.bcc) || null,
+			date, body,
+			read: boolQuery(c, "read") ?? true, starred: boolQuery(c, "starred") ?? false,
+			in_reply_to: inReplyTo, email_references: references.length > 0 ? JSON.stringify(references) : null,
+			// The root's own Message-ID is the thread ID, so replies join it whatever order they arrive in.
+			thread_id: references[0] || inReplyTo || messageId || id, message_id: messageId,
+			raw_headers: byteLength(rawHeaders) > MAX_IMPORT_HEADER_BYTES ? null : rawHeaders,
+		}, attachments);
+	} catch (e) {
+		// The insert failed, so nothing references the attachments just stored.
+		if (attachments.length > 0) await deleteAttachments();
+		throw e;
+	}
 
 	if (!inserted) {
 		// Lost a race with an identical upload: remove the attachments just stored.
-		if (attachments.length > 0) await c.env.BUCKET.delete(attachments.map((a) => `attachments/${id}/${a.id}/${a.filename}`));
+		if (attachments.length > 0) await deleteAttachments();
 		return c.json({ status: "duplicate" });
 	}
 	return c.json({ status: trimmed ? "trimmed" : "imported", id }, 201);
